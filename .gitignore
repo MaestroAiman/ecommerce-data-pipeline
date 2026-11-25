@@ -1,0 +1,29 @@
+# Environments
+venv/
+.venv/
+env/
+.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+
+# Prefect
+prefect-storage/
+
+# Raw / bulk data (not meant for version control)
+data/raw/
+data/*.parquet
+data/*.zip
+
+# Logs and reports
+logs/
+reports/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
