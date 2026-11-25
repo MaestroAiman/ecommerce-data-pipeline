@@ -15,6 +15,20 @@ CSV files  →  S3 (raw-data/)  →  Clean & transform  →  Business metrics  �
 - **Orchestration** (`src/orchestration/prefect_flows.py`): the same pipeline wrapped as a Prefect flow (`ecommerce_etl_pipeline`), with per-task retries/backoff and structured logging, so it can be scheduled and monitored via the Prefect UI.
 - **Containerization**: a `docker-compose.yml` that runs a Prefect server alongside the pipeline container, so the whole thing comes up with one command.
 
+## Pipeline in action (S3 data lake)
+
+**1. The S3 bucket**, split into a `raw-data/` zone for the ingested CSVs and a `processed/` zone for the cleaned output and business metrics:
+
+![S3 bucket overview](docs/images/s3-bucket-overview.png)
+
+**2. `raw-data/`** after the ingestion step uploads the source CSVs:
+
+![Raw data in S3](docs/images/s3-raw-data.png)
+
+**3. `processed/`** after the transformation step — cleaned datasets plus a `metrics/` folder with the computed business metrics:
+
+![Processed data in S3](docs/images/s3-processed-data.png)
+
 ## Tech stack
 
 | Category | Technology |
