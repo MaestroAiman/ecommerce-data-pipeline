@@ -88,183 +88,176 @@ def download_data_from_s3(s3,bucket_name):
     return datasets
 
 
+def clean_customers(customers):
+    """Normalize emails, parse dates, derive age and age_group. Pure function."""
+    customers = customers.copy()
+
+    customers['email'] = customers['email'].str.lower().str.strip()
+
+    customers['date_of_birth'] = pd.to_datetime(customers['date_of_birth'])
+    customers['registration_date'] = pd.to_datetime(customers['registration_date'])
+
+    customers['age'] = (datetime.now() - customers['date_of_birth']).dt.days // 365
+
+    customers['age_group'] = pd.cut(customers['age'], bins=[0, 25, 35, 50, 65, 100],
+                                     labels=['18-25', '26-35', '36-50', '51-65', '65+'])
+
+    return customers
+
+def clean_products(products):
+    """Normalize product names, coerce price to numeric, derive price_category. Pure function."""
+    products = products.copy()
+
+    products['product_name'] = products['product_name'].str.strip()
+
+    products['price'] = pd.to_numeric(products['price'], errors='coerce')
+
+    products['price_category'] = pd.cut(products['price'], bins=[0, 50, 150, 500, float('inf')],
+                                         labels=['Budget', 'Mid-range', 'Premium', 'Luxury'])
+
+    return products
+
+def clean_orders(orders):
+    """Parse order_date, coerce total_amount to numeric, derive order_month/order_year. Pure function."""
+    orders = orders.copy()
+
+    orders['order_date'] = pd.to_datetime(orders['order_date'])
+
+    orders['total_amount'] = pd.to_numeric(orders['total_amount'], errors='coerce')
+
+    orders['order_month'] = orders['order_date'].dt.month
+    orders['order_year'] = orders['order_date'].dt.year
+
+    return orders
+
+def clean_order_items(order_items):
+    """Coerce quantity/unit_price to numeric and compute total_price. Pure function."""
+    order_items = order_items.copy()
+
+    order_items['quantity'] = pd.to_numeric(order_items['quantity'], errors='coerce')
+    order_items['unit_price'] = pd.to_numeric(order_items['unit_price'], errors='coerce')
+
+    order_items['total_price'] = order_items['quantity'] * order_items['unit_price']
+
+    return order_items
+
+def clean_reviews(reviews):
+    """Parse review_date, coerce rating to numeric, derive rating_category. Pure function."""
+    reviews = reviews.copy()
+
+    reviews['review_date'] = pd.to_datetime(reviews['review_date'])
+
+    reviews['rating'] = pd.to_numeric(reviews['rating'], errors='coerce')
+
+    reviews['rating_category'] = reviews['rating'].apply(
+        lambda x: 'Excellent' if x >= 4.5 else
+                    'Good' if x >= 3.5 else
+                    'Average' if x >= 2.5 else 'Poor'
+    )
+
+    return reviews
+
+def compute_customer_metrics(customers_clean, orders_clean):
+    """Customer lifetime value: spend/order-count/averages per customer, with age_group. Pure function."""
+    customer_metrics = orders_clean.groupby('customer_id').agg({
+        'total_amount': ['sum', 'count', 'mean'],
+        'order_date': ['min', 'max']
+    }).round(2)
+
+    customer_metrics.columns = ['total_spent', 'order_count', 'ave_order_value', 'first_order', 'last_order']
+
+    customer_metrics = customer_metrics.reset_index()
+
+    customer_metrics = customer_metrics.merge(customers_clean[['customer_id', 'age_group']])
+
+    return customer_metrics
+
+def compute_product_metrics(products_clean, order_items_clean):
+    """Product sales performance: quantity sold/revenue/order count per product. Pure function."""
+    product_metrics = order_items_clean.groupby('product_id').agg({
+        'quantity': 'sum',
+        'total_price': 'sum',
+        'order_id': 'count'
+    }).round(2)
+
+    product_metrics.columns = ['total_quantity_sold', 'total_revenue', 'number_of_orders']
+    product_metrics = product_metrics.reset_index()
+
+    product_metrics = product_metrics.merge(
+        products_clean[['product_id', 'product_name', 'category', 'price']], on='product_id'
+    )
+
+    return product_metrics
+
+def compute_monthly_sales(orders_clean):
+    """Monthly revenue/order-count trend. Pure function."""
+    monthly_sales = orders_clean.groupby(['order_year', 'order_month']).agg({
+        'total_amount': 'sum',
+        'order_id': 'count'
+    }).round(2)
+
+    monthly_sales.columns = ['total_revenue', 'order_count']
+    monthly_sales = monthly_sales.reset_index()
+
+    return monthly_sales
+
 def transform_data(datasets):
 
     processed = {}
 
-    # Process customer data
     if 'customers' in datasets:
-        customers = datasets['customers'].copy()
+        processed['customers_clean'] = clean_customers(datasets['customers'])
+        print(f"Processed customers: {len(processed['customers_clean'])} records")
 
-        # Clean email addresses
-        customers['email'] = customers['email'].str.lower().str.strip()
-
-        # Convert dates
-        customers['date_of_birth'] = pd.to_datetime(customers['date_of_birth'])
-        customers['registration_date'] = pd.to_datetime(customers['registration_date'])
-
-        # Calculate age
-
-        customers['age'] = (datetime.now() - customers['date_of_birth']).dt.days // 365
-
-        # Create age groups
-
-        customers['age_group'] = pd.cut(customers['age'], bins = [0, 25, 35, 50, 65, 100],
-                                        labels = ['18-25','26-35','36-50','51-65','65+'])
-
-        processed['customers_clean'] = customers
-
-        print(f'Processed customers: {len(customers)} records')
-
-
-            # Process products data
     if 'products' in datasets:
-        products = datasets['products'].copy()
+        processed['products_clean'] = clean_products(datasets['products'])
+        print(f"Processed products: {len(processed['products_clean'])} records")
 
-        # Clean product name
-        products['product_name'] = products['product_name'].str.strip()
-
-        # Convert price to numeric
-        products['price'] = pd.to_numeric(products['price'], errors = 'coerce')
-
-        # Create age groups
-
-        products['price_category'] = pd.cut(products['price'], bins = [0, 50, 150, 500, float('inf')],
-                                        labels = ['Budget','Mid-range','Premium','Luxury'])
-
-        processed['products_clean'] = products
-
-        print(f'Processed products: {len(products)} records')
-
-            # Process orders data
     if 'orders' in datasets:
-        orders = datasets['orders'].copy()
+        processed['orders_clean'] = clean_orders(datasets['orders'])
+        print(f"Processed orders: {len(processed['orders_clean'])} records")
 
-        # Convert date
-        orders['order_date'] = pd.to_datetime(orders['order_date'])
-
-        # Convert total amount to numeric
-        orders['total_amount'] = pd.to_numeric(orders['total_amount'], errors = 'coerce')
-
-        # Extract month and year for seasonal analysis
-
-        orders['order_month'] = orders['order_date'].dt.month
-        orders['order_year'] = orders['order_date'].dt.year
-
-        processed['orders_clean'] = orders
-
-        print(f'Processed orders: {len(orders)} records')
-
-
-            # Process order items data
     if 'order_items' in datasets:
-        order_items = datasets['order_items'].copy()
+        processed['order_items_clean'] = clean_order_items(datasets['order_items'])
+        print(f"Processed order_items: {len(processed['order_items_clean'])} records")
 
-        # Convert numeric columns
-        order_items['quantity'] = pd.to_numeric(order_items['quantity'], errors = 'coerce')
-        order_items['unit_price'] = pd.to_numeric(order_items['unit_price'], errors = 'coerce')
-
-        # Calculate total price per item
-
-        order_items['total_price'] = order_items['quantity']*order_items['unit_price']
-
-        processed['order_items_clean'] = order_items
-
-        print(f'Processed order_items: {len(order_items)} records')
-
-
-
-            # Process review data
     if 'reviews' in datasets:
-        reviews = datasets['reviews'].copy()
+        processed['reviews_clean'] = clean_reviews(datasets['reviews'])
+        print(f"Processed reviews: {len(processed['reviews_clean'])} records")
 
-        # Convert date
-        reviews['review_date'] = pd.to_datetime(reviews['review_date'])
-
-        # Convert rating to numeric
-        reviews['rating'] = pd.to_numeric(reviews['rating'], errors = 'coerce')
-
-        # Create rating categories
-
-        reviews['rating_category'] = reviews['rating'].apply(
-            lambda x: 'Excellent' if x >=4.5 else
-                        'Good' if x>=3.5 else
-                        'Average' if x >=2.5 else 'Poor'
-        )
-
-        processed['reviews_clean'] = reviews
-
-        print(f'Processed reviews: {len(reviews)} records')
-    
     return processed
 
 def create_business_metrics(processed_datasets):
 
     metrics = {}
 
-    # Customer metric
-
     if 'customers_clean' in processed_datasets and 'orders_clean' in processed_datasets:
-        customers = processed_datasets['customers_clean']
-        orders = processed_datasets['orders_clean']
-
-        # Customer lifetime value
-        customer_metrics = orders.groupby('customer_id').agg({
-            'total_amount':['sum','count','mean'],
-            'order_date':['min','max']
-        }).round(2)
-
-        customer_metrics.columns = ['total_spent','order_count','ave_order_value','first_order','last_order']
-
-        customer_metrics = customer_metrics.reset_index()
-
-        # Merge with customer data
-
-        customer_metrics = customer_metrics.merge(customers[['customer_id','age_group']])
-
-        metrics['customer_metrics'] = customer_metrics
-
-        print(f'Created customer metrics: {len(customer_metrics)} customers')
-
-    # Product performance metrics
+        metrics['customer_metrics'] = compute_customer_metrics(
+            processed_datasets['customers_clean'], processed_datasets['orders_clean']
+        )
+        print(f"Created customer metrics: {len(metrics['customer_metrics'])} customers")
 
     if 'products_clean' in processed_datasets and 'order_items_clean' in processed_datasets:
-        products = processed_datasets['products_clean']
-        order_items = processed_datasets['order_items_clean']
-        
-        # Product sales metrics
-        product_metrics = order_items.groupby('product_id').agg({
-            'quantity': 'sum',
-            'total_price': 'sum',
-            'order_id': 'count'
-        }).round(2)
-        
-        product_metrics.columns = ['total_quantity_sold', 'total_revenue', 'number_of_orders']
-        product_metrics = product_metrics.reset_index()
-        
-        # Merge with product data
-        product_metrics = product_metrics.merge(products[['product_id', 'product_name', 'category', 'price']], on='product_id')
-        
-        metrics['product_metrics'] = product_metrics
-        print(f"Created product metrics: {len(product_metrics)} products")
-
-    # Monthly sales trends
+        metrics['product_metrics'] = compute_product_metrics(
+            processed_datasets['products_clean'], processed_datasets['order_items_clean']
+        )
+        print(f"Created product metrics: {len(metrics['product_metrics'])} products")
 
     if 'orders_clean' in processed_datasets:
-        orders = processed_datasets['orders_clean']
-        
-        monthly_sales = orders.groupby(['order_year', 'order_month']).agg({
-            'total_amount': 'sum',
-            'order_id': 'count'
-        }).round(2)
-        
-        monthly_sales.columns = ['total_revenue', 'order_count']
-        monthly_sales = monthly_sales.reset_index()
-        
-        metrics['monthly_sales'] = monthly_sales
-        print(f"Created monthly sales trends: {len(monthly_sales)} months")
-    
+        metrics['monthly_sales'] = compute_monthly_sales(processed_datasets['orders_clean'])
+        print(f"Created monthly sales trends: {len(metrics['monthly_sales'])} months")
+
     return metrics
+
+def to_athena_parquet(df):
+    """Return a copy of df made safe for Athena-compatible Parquet: no pandas
+    category/Period dtypes (cast to str), caller still needs coerce_timestamps="ms"
+    at write time for nanosecond timestamps."""
+    df = df.copy()
+    for col in df.columns:
+        if isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype(str)
+    return df
 
 def upload_processed_data(s3,bucket_name,processed,metrics):
 
@@ -274,12 +267,16 @@ def upload_processed_data(s3,bucket_name,processed,metrics):
     # Upload processed datasets
     for dataset_name, df in processed.items():
         try:
-            # Save a temporary csv file
-            local_path = os.path.join(tempfile.gettempdir(), f"{dataset_name}.csv")
-            df.to_csv(local_path, index=False)
+            # Save a temporary parquet file (S3 key is fixed, so a rerun
+            # overwrites it in place - no duplicate/partitioned files)
+            local_path = os.path.join(tempfile.gettempdir(), f"{dataset_name}.parquet")
+            to_athena_parquet(df).to_parquet(
+                local_path, engine="pyarrow", index=False,
+                coerce_timestamps="ms", allow_truncated_timestamps=True
+            )
 
             # Upload to S3
-            s3_key = f"processed/{dataset_name}.csv"
+            s3_key = f"processed/{dataset_name}.parquet"
             s3.upload_file(local_path,bucket_name,s3_key)
 
             print(f"Uploaded {dataset_name}: {len(df)} records")
@@ -294,12 +291,16 @@ def upload_processed_data(s3,bucket_name,processed,metrics):
         # Upload business metrics
     for metric_name, df in metrics.items():
         try:
-            # Save a temporary csv file
-            local_path = os.path.join(tempfile.gettempdir(), f"{metric_name}.csv")
-            df.to_csv(local_path, index=False)
+            # Save a temporary parquet file
+            local_path = os.path.join(tempfile.gettempdir(), f"{metric_name}.parquet")
+            to_athena_parquet(df).to_parquet(
+                local_path, engine="pyarrow", index=False,
+                coerce_timestamps="ms", allow_truncated_timestamps=True
+            )
 
-            # Upload to S3
-            s3_key = f"processed/metrics/{metric_name}.csv"
+            # Upload to S3 - each metric gets its own folder/prefix so it can be
+            # mapped to its own Athena table (see sql/create_tables.sql)
+            s3_key = f"processed/metrics/{metric_name}/{metric_name}.parquet"
             s3.upload_file(local_path,bucket_name,s3_key)
 
             print(f"Uploaded {metric_name}: {len(df)} records")
