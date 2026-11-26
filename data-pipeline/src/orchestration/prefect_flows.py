@@ -231,6 +231,16 @@ def create_business_metrics(processed_datasets):
     
     return metrics
 
+def to_athena_parquet(df):
+    """Return a copy of df made safe for Athena-compatible Parquet: no pandas
+    category/Period dtypes (cast to str), caller still needs coerce_timestamps="ms"
+    at write time for nanosecond timestamps."""
+    df = df.copy()
+    for col in df.columns:
+        if isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype(str)
+    return df
+
 @task(name="upload_processed_data",retries=2,retry_delay_seconds=45,cache_policy=None)
 def upload_processed_data(s3,bucket_name,processed,metrics):
 
@@ -241,12 +251,16 @@ def upload_processed_data(s3,bucket_name,processed,metrics):
     # Upload processed datasets
     for dataset_name, df in processed.items():
         try:
-            # Save a temporary csv file
-            local_path = os.path.join(tempfile.gettempdir(), f"{dataset_name}.csv")
-            df.to_csv(local_path, index=False)
+            # Save a temporary parquet file (S3 key is fixed, so a rerun
+            # overwrites it in place - no duplicate/partitioned files)
+            local_path = os.path.join(tempfile.gettempdir(), f"{dataset_name}.parquet")
+            to_athena_parquet(df).to_parquet(
+                local_path, engine="pyarrow", index=False,
+                coerce_timestamps="ms", allow_truncated_timestamps=True
+            )
 
             # Upload to S3
-            s3_key = f"processed/{dataset_name}.csv"
+            s3_key = f"processed/{dataset_name}.parquet"
             s3.upload_file(local_path,bucket_name,s3_key)
 
             logger.info(f"Uploaded {dataset_name}: {len(df)} records")
@@ -261,12 +275,16 @@ def upload_processed_data(s3,bucket_name,processed,metrics):
         # Upload business metrics
     for metric_name, df in metrics.items():
         try:
-            # Save a temporary csv file
-            local_path = os.path.join(tempfile.gettempdir(), f"{metric_name}.csv")
-            df.to_csv(local_path, index=False)
+            # Save a temporary parquet file
+            local_path = os.path.join(tempfile.gettempdir(), f"{metric_name}.parquet")
+            to_athena_parquet(df).to_parquet(
+                local_path, engine="pyarrow", index=False,
+                coerce_timestamps="ms", allow_truncated_timestamps=True
+            )
 
-            # Upload to S3
-            s3_key = f"processed/metrics/{metric_name}.csv"
+            # Upload to S3 - each metric gets its own folder/prefix so it can be
+            # mapped to its own Athena table (see sql/create_tables.sql)
+            s3_key = f"processed/metrics/{metric_name}/{metric_name}.parquet"
             s3.upload_file(local_path,bucket_name,s3_key)
 
             logger.info(f"Uploaded {metric_name}: {len(df)} records")
